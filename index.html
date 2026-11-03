@@ -9,4 +9,52 @@ function stop(){if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$(
 function applyRaw(){const start=+$('from').value,end=+$('to').value;if(!Number.isInteger(start)||!Number.isInteger(end)||start<1||end>key.length||start>end){msg('Ayusin ang item range ayon sa key.');return}const lines=$('raw').value.toUpperCase().split(/\r?\n/).map(x=>x.trim()).filter(Boolean),found=new Map(),duplicates=new Set();let seq=start;for(const line of lines){let m=line.match(/^(\d{1,3})\s*[.)\-:]?\s*([ABCD])\s*[.)]?$/);let n,a;if(m){n=+m[1];a=m[2]}else if(/^[ABCD]$/.test(line)){n=seq++;a=line}else continue;if(n<start||n>end)continue;if(found.has(n))duplicates.add(n);else found.set(n,a)}for(let i=start;i<=end;i++)answers[i-1]=duplicates.has(i)?'':found.get(i)||'';invalidate();render();msg('Na-apply ang '+(found.size-duplicates.size)+' sagot. Suriin ang LAHAT ng letra sa litrato; blanko ang hindi nabasa o duplicate.')} $('apply').onclick=applyRaw;
 $('scan').onclick=async()=>{if($('photo').hidden){msg('Kunan o pumili muna ng larawan.');return}const b=$('scan');b.disabled=true;try{if(!window.Tesseract)throw Error('OCR library unavailable');msg('Loading OCR…');if(!worker){worker=await Tesseract.createWorker('eng',1,{logger:m=>{if(m.status)msg(m.status+' '+Math.round((m.progress||0)*100)+'%')}});await worker.setParameters({tessedit_char_whitelist:'0123456789ABCDabcd.):- ',tessedit_pageseg_mode:'6'})}const r=await worker.recognize($('photo'));$('raw').value=r.data.text;applyRaw()}catch(e){msg('Hindi natuloy ang OCR. Kailangan ng internet para sa OCR engine. Subukan muli o gamitin ang manual entry.')}finally{b.disabled=false}};
 $('grade').onclick=()=>{if($('key').value.toUpperCase().trim().split(/[\s,;]+/).filter(Boolean).join(' ')!==key.join(' ')){msg('I-save muna ang binagong answer key.');return}graded=true;const score=key.reduce((n,k,i)=>n+(answers[i]===k?1:0),0),blank=key.filter((k,i)=>!answers[i]).length;render();$('result').replaceChildren();const d=document.createElement('div');d.className='score';d.textContent=score+' / '+key.length;$('result').append(d);const p=document.createElement('p');p.textContent=(score/key.length*100).toFixed(1)+'% · '+blank+' blank / unread · Blanks count as incorrect.';$('result').append(p);$('download').disabled=false};const quote=s=>'"'+String(s).replace(/"/g,'""')+'"';$('download').onclick=()=>{if(!graded)return;const score=key.reduce((n,k,i)=>n+(answers[i]===k?1:0),0);const rows=[['Exam',$('exam').value],['Student',$('student').value],['Score',score],['Total',key.length],['Item','Student answer','Correct answer','Result'],...key.map((k,i)=>[i+1,answers[i]||'',k,answers[i]===k?'Correct':answers[i]?'Incorrect':'Blank / unread'])];blobDownload('checked-paper.csv','\uFEFF'+rows.map(r=>r.map(quote).join(',')).join('\r\n'),'text/csv;charset=utf-8')};$('new').onclick=()=>{stop();answers=[];$('student').value='';$('raw').value='';$('photo').hidden=true;$('photo').removeAttribute('src');$('upload').value='';invalidate();render();msg('Bagong papel ready.')};$('share').onclick=async()=>{try{if(navigator.share)await navigator.share({title:'GuroScan — Paper Checker',url:location.href.split('#')[0]});else{await navigator.clipboard.writeText(location.href.split('#')[0]);msg('Nakopya ang app link. Ipadala ito sa kapwa guro.')}}catch{msg('App link: '+location.href.split('#')[0])}};
-</script></html>
+</script>
+<script>
+/* Live camera reading: no shutter action; repeated numbered readings required. */
+let liveOn=false,liveGeneration=0,liveTimer=null,liveWorker=null,liveBusy=false,lastReading='',seenItems=new Set();
+const livePanel=document.createElement('div');
+livePanel.className='banner';livePanel.id='liveScore';livePanel.setAttribute('aria-live','polite');
+$('video').before(livePanel);
+const liveButton=document.createElement('button');liveButton.id='liveToggle';liveButton.className='secondary';liveButton.textContent='Simulan ang live scan';$('stop').after(liveButton);
+const guide=document.createElement('p');guide.className='muted';guide.textContent='LIVE SCAN • Itapat sa isang column ng numbered answers (hal. 1. D o D 1.). Dalawang magkasunod na parehong pagbasa bago i-apply. Maaaring ilang segundo bawat basa. I-pause bago ilipat sa ibang bahagi. Bagong papel para sa susunod na estudyante.';livePanel.before(guide);
+function liveSummary(){let correct=0,wrong=0;for(const i of seenItems){if(answers[i]){if(answers[i]===key[i])correct++;else wrong++}}
+livePanel.textContent=(liveOn?'● Live scan · ':'Pansamantalang bilang · ')+'Tama: '+correct+' | Mali: '+wrong+' | Hindi pa nabasa: '+(key.length-correct-wrong)+' | Nabasa: '+(correct+wrong)+'/'+key.length+'. I-review bago i-finalize.';}
+const oldInvalidate=invalidate;invalidate=function(){oldInvalidate();liveSummary()};
+const oldStop=stop;stop=function(){liveOn=false;liveGeneration++;clearTimeout(liveTimer);lastReading='';oldStop();liveButton.textContent='Simulan ang live scan';$('scan').disabled=false;liveSummary()};
+function readNumbered(text,start,end){const found=new Map(),dup=new Set();for(const line of text.toUpperCase().split(/\r?\n/)){let m=line.trim().match(/^(\d{1,3})\s*[.)\-:]?\s*([ABCD])\s*[.)]?$/),n,a;if(m){n=+m[1];a=m[2]}else{m=line.trim().match(/^([ABCD])\s*[.)\-:]?\s*(\d{1,3})\s*[.)]?$/);if(!m)continue;a=m[1];n=+m[2]}if(n<start||n>end)continue;if(found.has(n))dup.add(n);else found.set(n,a)}for(const n of dup)found.delete(n);return [...found].sort((a,b)=>a[0]-b[0])}
+async function liveTick(token){if(!liveOn||token!==liveGeneration)return;if(liveBusy){liveTimer=setTimeout(()=>liveTick(token),500);return}
+const v=$('video'),start=+$('from').value,end=+$('to').value;
+if(!Number.isInteger(start)||!Number.isInteger(end)||start<1||end>key.length||start>end){msg('Ayusin ang item range, saka simulan muli ang live scan.');stop();return}
+if(!v.videoWidth||v.readyState<2){liveTimer=setTimeout(()=>liveTick(token),500);return}
+if($('key').value.toUpperCase().trim().split(/[\s,;]+/).filter(Boolean).join(' ')!==key.join(' ')){msg('I-save muna ang binagong answer key.');stop();return}
+liveBusy=true;
+try{
+if(!window.Tesseract)throw Error('OCR engine unavailable');
+msg('Live OCR: binabasa ang camera… Panatilihing malinaw at tuwid ang numbered answers.');
+if(!liveWorker){liveWorker=await Tesseract.createWorker('eng',1);await liveWorker.setParameters({tessedit_char_whitelist:'0123456789ABCDabcd.):- ',tessedit_pageseg_mode:'6'})}
+if(!liveOn||token!==liveGeneration)return;
+const frame=document.createElement('canvas'),scale=Math.min(1,1800/v.videoWidth);frame.width=Math.round(v.videoWidth*scale);frame.height=Math.round(v.videoHeight*scale);frame.getContext('2d').drawImage(v,0,0,frame.width,frame.height);
+const r=await liveWorker.recognize(frame);
+if(!liveOn||token!==liveGeneration)return;
+const reading=readNumbered(r.data.text,start,end),signature=JSON.stringify([start,end,reading]);
+if(!reading.length){lastReading='';msg('Walang malinaw na numbered answer. Ilapit sa isang column lamang; hal. 1. D.');return}
+if(signature!==lastReading){lastReading=signature;msg('May '+reading.length+' nabasang sagot. Huwag munang igalaw; bine-verify sa susunod na basa.');return}
+for(const [n,a] of reading){answers[n-1]=a;seenItems.add(n-1)}
+$('raw').value=r.data.text;$('photo').src=frame.toDataURL('image/jpeg',.85);$('photo').hidden=false;invalidate();render();msg('Na-update ang pansamantalang score mula sa '+reading.length+' paulit-ulit na nabasang sagot. Hindi garantiya ng accuracy ang magkaparehong OCR; i-review pa rin.');
+}catch(e){if(token===liveGeneration){stop();msg('Hindi natuloy ang live OCR. Suriin ang internet, saka subukan muli. Maaari pa rin ang manual entry.')}}finally{liveBusy=false;if(liveOn&&token===liveGeneration)liveTimer=setTimeout(()=>liveTick(token),1600)}
+}
+function beginLive(){if(!stream){msg('Buksan muna ang camera at payagan ang access.');return}liveOn=true;lastReading='';const token=++liveGeneration;liveButton.textContent='I-pause ang live scan';$('scan').disabled=true;liveSummary();liveTick(token)}
+liveButton.onclick=()=>{if(liveOn){liveOn=false;liveGeneration++;clearTimeout(liveTimer);lastReading='';liveButton.textContent='Ipagpatuloy ang live scan';$('scan').disabled=false;liveSummary();msg('Naka-pause. Maaari nang i-review o ilipat ang papel.')}else beginLive()};
+const oldCamera=$('camera').onclick;$('camera').textContent='Buksan ang live camera';$('camera').onclick=async()=>{await oldCamera();if(stream)beginLive()};
+const oldGrade=$('grade').onclick;$('grade').onclick=()=>{stop();oldGrade()};
+const oldNew=$('new').onclick;$('new').onclick=()=>{seenItems.clear();oldNew();liveSummary()};
+const oldParse=parseKey;parseKey=function(){stop();seenItems.clear();return oldParse()};
+const oldApply=$('apply').onclick;$('apply').onclick=()=>{stop();oldApply();answers.forEach((a,i)=>{if(a)seenItems.add(i)});liveSummary()};
+for(const id of ['from','to'])$(id).addEventListener('change',()=>{lastReading='';liveGeneration++;clearTimeout(liveTimer);if(liveOn)liveTick(liveGeneration)});
+$('answers').addEventListener('change',()=>{answers.forEach((a,i)=>{if(a)seenItems.add(i)});liveSummary()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stop()});
+window.addEventListener('pagehide',()=>stop());
+liveSummary();
+</script>
+</html>
